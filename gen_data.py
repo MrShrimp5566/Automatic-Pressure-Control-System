@@ -2,70 +2,89 @@ import pandas as pd
 import numpy as np
 import os
 
-def generate_matched_data(samples_per_state=1000):
+def generate_pid_test_run(run_id, setpoint, disturbance, tuning_state):
     """
-    Generates a synthetic dataset simulating a pressure valve system with three states: NORMAL, HIGH PRESSURE, and LOW PRESSURE.
-    Each state has distinct characteristics for pressure, temperature, and flow rate.
+    Generates a single test run simulating a PID controller's response.
+    The response characteristics are determined by the 'tuning_state'.
+
     Args:
-        samples_per_state (int): The number of data points to generate for each state.
+        run_id (int): Identifier for this test run.
+        setpoint (float): The target pressure for the controller.
+        disturbance (float): The magnitude of the pressure drop.
+        tuning_state (str): 'Before Tuning' or 'After Tuning'.
 
     Returns:
-        pandas.DataFrame: A shuffled DataFrame with the complete dataset.
+        pandas.DataFrame: A DataFrame containing the data for one test run.
     """
-    all_states_df = []
-
-    # --- NORMAL State ---
-    pressure_normal = 50 + 8 * np.sin(np.linspace(0, 50, samples_per_state)) + np.random.normal(0, 2, samples_per_state)
-    temp_normal = 28 + np.random.normal(0, 1.5, samples_per_state)
-    flow_normal = 12 + np.random.normal(0, 2, samples_per_state)
-    df_normal = pd.DataFrame({
-        'Pressure (PSI)': pressure_normal, 'Temperature (°C)': temp_normal,
-        'Flow Rate (L/min)': flow_normal, 'Valve State': 'HOLD', 'Alert Status': 'NORMAL'
-    })
-    all_states_df.append(df_normal)
-
-    # --- HIGH PRESSURE State ---
-    pressure_high = 65 + np.random.normal(0, 3, samples_per_state)
-    temp_high = 29.5 + np.random.normal(0, 1.5, samples_per_state)
-    flow_high = 14 + np.random.normal(0, 2, samples_per_state)
-    df_high = pd.DataFrame({
-        'Pressure (PSI)': pressure_high, 'Temperature (°C)': temp_high,
-        'Flow Rate (L/min)': flow_high, 'Valve State': 'OPEN', 'Alert Status': 'HIGH PRESSURE'
-    })
-    all_states_df.append(df_high)
+    duration = 300  # seconds
+    sample_rate = 1 # samples per second
+    num_samples = duration * sample_rate
+    time = np.linspace(0, duration, num_samples)
     
-    # --- LOW PRESSURE State ---
-    pressure_low = 35 + np.random.normal(0, 3, samples_per_state)
-    temp_low = 26.5 + np.random.normal(0, 1.5, samples_per_state)
-    flow_low = 10 + np.random.normal(0, 2, samples_per_state)
-    df_low = pd.DataFrame({
-        'Pressure (PSI)': pressure_low, 'Temperature (°C)': temp_low,
-        'Flow Rate (L/min)': flow_low, 'Valve State': 'CLOSE', 'Alert Status': 'LOW PRESSURE'
-    })
-    all_states_df.append(df_low)
-
-    # --- Combine and Add Time ---
-    combined_df = pd.concat(all_states_df, ignore_index=True)
-    shuffled_df = combined_df.sample(frac=1).reset_index(drop=True)
-    shuffled_df.insert(0, 'Time (s)', shuffled_df.index * 5)
+    # --- Define PID performance parameters based on tuning state ---
+    if tuning_state == 'Before Tuning':
+        # Poorly tuned: slow decay (oscillates for a long time), higher frequency
+        decay = 0.010
+        frequency = 0.12
+    else:  # 'After Tuning'
+        # Well-tuned: faster decay (stabilizes quickly), lower frequency
+        decay = 0.040
+        frequency = 0.08
+        
+    # --- Simulate the PID Response using a Damped Sine Wave ---
+    recovery_phase = time[time > 10] - 10
+    damped_wave = disturbance * np.exp(-decay * recovery_phase) * np.cos(frequency * recovery_phase)
+    pressure = np.full_like(time, setpoint)
+    pressure[time <= 10] += disturbance
+    pressure[time > 10] += damped_wave
+    pressure += np.random.normal(0, 0.25, num_samples)
     
-    return shuffled_df
+    # --- Simulate other related parameters ---
+    valve_open_pct = 50 + -2 * (np.gradient(pressure, time))
+    valve_open_pct = np.clip(valve_open_pct, 10, 90)
+    flow_rate = valve_open_pct * 0.18 + np.random.normal(0, 0.5, num_samples)
+    temperature = 25 + (pressure / setpoint) * 5 + np.random.normal(0, 0.5, num_samples)
+    
+    # --- Assemble the DataFrame ---
+    df = pd.DataFrame({
+        'Run ID': run_id,
+        'Tuning State': tuning_state,
+        'Time (s)': time,
+        'Pressure (PSI)': pressure,
+        'Valve Open (%)': valve_open_pct,
+        'Flow Rate (L/min)': flow_rate,
+        'Temperature (°C)': temperature
+    })
+    
+    return df
 
 # ==============================================================================
 # SCRIPT EXECUTION
 # ==============================================================================
 if __name__ == "__main__":
-    # --- Generate a dataset and save it ---
-    synthetic_dataset = generate_matched_data(samples_per_state=1000)
+    # --- Define new test runs to be generated for this execution ---
+    # This list now includes the 'Tuning State' for each run
+    test_run_definitions = [
+        {'run_id': 1, 'setpoint': 65, 'disturbance': -20, 'tuning': 'Before Tuning'},
+        {'run_id': 2, 'setpoint': 65, 'disturbance': -20, 'tuning': 'After Tuning'},
+        {'run_id': 3, 'setpoint': 70, 'disturbance': -25, 'tuning': 'Before Tuning'},
+        {'run_id': 4, 'setpoint': 70, 'disturbance': -25, 'tuning': 'After Tuning'},
+    ]
     
-    file_path = 'synthetic_pressure_valve_data.csv'
+    all_runs_df = []
+    for definition in test_run_definitions:
+        run_df = generate_pid_test_run(
+            run_id=definition['run_id'],
+            setpoint=definition['setpoint'],
+            disturbance=definition['disturbance'],
+            tuning_state=definition['tuning']
+        )
+        all_runs_df.append(run_df)
     
+    final_dataset = pd.concat(all_runs_df, ignore_index=True)
+    
+    file_path = 'pid_tuning_experimental_data.csv'
+    
+    # --- Logic to Append or Create New File ---
     write_header = not os.path.exists(file_path)
-
-    synthetic_dataset.to_csv(file_path, mode='a', header=write_header, index=False)
-    
-    # A single print statement to confirm completion
-    if write_header:
-        print(f"New file created with {len(synthetic_dataset)} samples at '{file_path}'.")
-    else:
-        print(f"{len(synthetic_dataset)} samples appended to '{file_path}'.")
+    final_dataset.to_csv(file_path, mode='a', header=write_header, index=False)
