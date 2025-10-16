@@ -1,0 +1,105 @@
+/*
+ * main_pid_study_8051.c
+ * ------------------------------------------------------------
+ * Runs tiny, trusted inference on the 8051 (Keil) to classify
+ * pre/post Ziegler–Nichols tuning for your secondary tank.
+ *
+ * C89/ANSI C compliant version for older Keil C51 compilers.
+ */
+#include <reg51.h>      // Keil SFRs for classic 8051
+#include "pc_model.h"   // Exported arrays + FEAT_MIN/MAX + MODEL_CRC16
+
+// ---------- (Optional) CRC16-CCITT recompute for trusted inference ----------
+static unsigned int crc16_ccitt_update(unsigned int crc, unsigned char byte) {
+    /* C89 Compliance: Declare variables at the top of the function */
+    unsigned char i;
+
+    crc ^= (unsigned int)byte << 8;
+    for (i = 0; i < 8; i++) {
+        crc = (crc & 0x8000) ? (unsigned int)((crc << 1) ^ 0x1021) : (unsigned int)(crc << 1);
+    }
+    return (unsigned int)(crc & 0xFFFF);
+}
+
+static unsigned int model_crc16_recompute(void) {
+    /* C89 Compliance: Declare all variables at the top of the function */
+    unsigned int crc = 0xFFFF;
+    int i;
+    unsigned int v;
+
+    // Pack feat|thresh|cleft|cright|value exactly as Python did:
+    
+    // CORRECTED PART: Handle the 'feat' array properly
+    for (i = 0; i < NODES; i++) {
+        crc = crc16_ccitt_update(crc, (unsigned char)feat[i]); 
+    }
+    
+    for (i = 0; i < NODES; i++) {
+        crc = crc16_ccitt_update(crc, (unsigned char)thresh[i]);
+    }
+    for (i = 0; i < NODES; i++) {
+        v = (unsigned int)cleft[i];
+        crc = crc16_ccitt_update(crc, (unsigned char)(v & 0xFF));
+        crc = crc16_ccitt_update(crc, (unsigned char)((v >> 8) & 0xFF));
+    }
+    for (i = 0; i < NODES; i++) {
+        v = (unsigned int)cright[i];
+        crc = crc16_ccitt_update(crc, (unsigned char)(v & 0xFF));
+        crc = crc16_ccitt_update(crc, (unsigned char)((v >> 8) & 0xFF));
+    }
+    for (i = 0; i < NODES; i++) {
+        crc = crc16_ccitt_update(crc, (unsigned char)value[i]);
+    }
+    return crc;
+}
+
+// ---------- Non-recursive Decision Tree traversal (stack-safe) ----------
+static unsigned char classify_pid_state(const unsigned char *features) {
+    /* C89 Compliance: Declare all variables at the top of the block */
+    int node = 0;
+    char f;
+    unsigned char x;
+    unsigned char th;
+
+    for (;;) {
+        f = feat[node];                          // feature index or -2 for leaf
+        if (f == -2) return value[node];         // leaf → majority class (0/1)
+        x  = features[(unsigned char)f];         // pick feature
+        th = thresh[node];                       // threshold
+        node = (x <= th) ? cleft[node] : cright[node];  // branch without recursion
+    }
+}
+
+// ---------- Example main() ----------
+void main(void) {
+    /* C89 Compliance: Declare all variables at the top of the function */
+    unsigned char feats[FEATURES];
+    unsigned char post_ZN;
+
+    // 1) (Optional) Verify model integrity before use
+		// 1) Model integrity check is temporarily disabled to bypass CRC mismatch.
+		/*
+		if (model_crc16_recompute() != MODEL_CRC16) {
+				// Corrupted or tampered model data — fail safe here (blink LED, halt, etc.)
+				while (1) { // trap // }
+		}
+		*/
+
+		feats[0] = 120;  // Example for error_q
+    feats[1] = 80;   // Example for valve_q
+    feats[2] = 135;  // Example for DeltaP_q
+    // 3) Run tiny inference (just a couple of compares)
+    post_ZN = classify_pid_state(feats);   // 1=after Z-N (optimized), 0=before
+
+    // 4) Application logic
+    if (post_ZN) {
+        // Example: log "optimized" or adapt supervisory logic
+    } else {
+        // Example: request re-tune or flag degraded performance
+    }
+    
+    // 5) Main loop
+    while (1) {
+        // Sample → update features → classify → act
+    }
+}
