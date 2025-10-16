@@ -9,6 +9,41 @@
 #include <reg51.h>      // Keil SFRs for classic 8051
 #include "pc_model.h"   // Exported arrays + FEAT_MIN/MAX + MODEL_CRC16
 
+int integral = 0;
+int prev_error = 0;
+int simulated_pressure = 50;
+int valve_control = 0;
+
+// --- Add these new simulation functions ---
+int read_pressure_sensor(void) {
+    // In a real system, this would read from an ADC.
+    // For our simulation, it just returns the current virtual pressure.
+    return simulated_pressure;
+}
+
+void drive_valve(int control_signal) {
+    // In a real system, this would control a PWM output.
+    // For our simulation, we just store the value.
+    valve_control = control_signal;
+}
+
+int PID_update(int error) {
+    int Kp = 2;  // Proportional gain (start with simple values)
+    int Ki = 1;  // Integral gain
+    int Kd = 1;  // Derivative gain
+    
+    int derivative;
+    int control_output;
+
+    integral = integral + error;
+    derivative = error - prev_error;
+    
+    control_output = (Kp * error) + (Ki * integral) + (Kd * derivative);
+    
+    prev_error = error;
+    
+    return control_output;
+}
 // ---------- (Optional) CRC16-CCITT recompute for trusted inference ----------
 static unsigned int crc16_ccitt_update(unsigned int crc, unsigned char byte) {
     /* C89 Compliance: Declare variables at the top of the function */
@@ -73,33 +108,27 @@ static unsigned char classify_pid_state(const unsigned char *features) {
 // ---------- Example main() ----------
 void main(void) {
     /* C89 Compliance: Declare all variables at the top of the function */
-    unsigned char feats[FEATURES];
-    unsigned char post_ZN;
+    int current_pressure;
+    int pressure_setpoint = 100; // Our target pressure
+    int error;
+    int control_signal;
 
-    // 1) (Optional) Verify model integrity before use
-		// 1) Model integrity check is temporarily disabled to bypass CRC mismatch.
-		/*
-		if (model_crc16_recompute() != MODEL_CRC16) {
-				// Corrupted or tampered model data — fail safe here (blink LED, halt, etc.)
-				while (1) { // trap // }
-		}
-		*/
-
-		feats[0] = 120;  // Example for error_q
-    feats[1] = 80;   // Example for valve_q
-    feats[2] = 135;  // Example for DeltaP_q
-    // 3) Run tiny inference (just a couple of compares)
-    post_ZN = classify_pid_state(feats);   // 1=after Z-N (optimized), 0=before
-
-    // 4) Application logic
-    if (post_ZN) {
-        // Example: log "optimized" or adapt supervisory logic
-    } else {
-        // Example: request re-tune or flag degraded performance
-    }
-    
-    // 5) Main loop
+    // The main control loop that runs forever
     while (1) {
-        // Sample → update features → classify → act
+        // 1. Read the sensor
+        current_pressure = read_pressure_sensor();
+
+        // 2. Calculate the error
+        error = pressure_setpoint - current_pressure;
+        
+        // 3. Compute the control signal using the PID algorithm
+        control_signal = PID_update(error);
+        
+        // 4. Drive the valve with the new signal
+        drive_valve(control_signal);
+        
+        // 5. Update our simple tank simulation model
+        //    (Pressure increases with valve opening and decreases with a constant "leak")
+        simulated_pressure = simulated_pressure + (valve_control / 10) - 5;
     }
 }
