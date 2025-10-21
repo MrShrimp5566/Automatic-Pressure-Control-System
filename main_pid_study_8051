@@ -1,52 +1,62 @@
 /*
  * main_pid_study_8051.c
  * ------------------------------------------------------------
- * Runs tiny, trusted inference on the 8051 (Keil) to classify
- * pre/post Ziegler–Nichols tuning for your secondary tank.
+ * Runs a PID controller and a tiny ML model for diagnostics
+ * on a simulated 8051 microcontroller.
  *
  * C89/ANSI C compliant version for older Keil C51 compilers.
  */
 #include <reg51.h>      // Keil SFRs for classic 8051
 #include "pc_model.h"   // Exported arrays + FEAT_MIN/MAX + MODEL_CRC16
 
+// --- Global variables for the PID Controller ---
 int integral = 0;
 int prev_error = 0;
+
+// --- Global variables for the Simulation ---
 int simulated_pressure = 50;
 int valve_control = 0;
 
-// --- Add these new simulation functions ---
+// --- Global variables for the ML Model ---
+unsigned char performance_warning_flag = 0; // 0 = OK, 1 = Untuned Performance Detected
+int last_pressure = 0; // To calculate the change in pressure
+
+// --- Simulation Functions ---
 int read_pressure_sensor(void) {
-    // In a real system, this would read from an ADC.
-    // For our simulation, it just returns the current virtual pressure.
     return simulated_pressure;
 }
 
 void drive_valve(int control_signal) {
-    // In a real system, this would control a PWM output.
-    // For our simulation, we just store the value.
     valve_control = control_signal;
 }
 
-int PID_update(int error) {
-    int Kp = 2;  // Proportional gain (start with simple values)
-    int Ki = 1;  // Integral gain
-    int Kd = 1;  // Derivative gain
+void update_tank_pressure(int value_signal){
+    int leak = 5;
     
-    int derivative;
-    int control_output;
+    simulated_pressure = simulated_pressure + (value_signal / 10) - leak;
 
-    integral = integral + error;
+    if (simulated_pressure < 0) {
+        simulated_pressure = 0;
+    }
+}
+
+// --- PID Controller Function ---
+int PID_update(int error) {
+    int Kp = 15, Ki = 0, Kd = 0; // PID gains
+    int derivative, control_output;
+    
+    integral += error;
     derivative = error - prev_error;
     
     control_output = (Kp * error) + (Ki * integral) + (Kd * derivative);
-    
+
     prev_error = error;
-    
+
     return control_output;
 }
-// ---------- (Optional) CRC16-CCITT recompute for trusted inference ----------
+
+// --- ML Model Functions (CRC and Classifier) ---
 static unsigned int crc16_ccitt_update(unsigned int crc, unsigned char byte) {
-    /* C89 Compliance: Declare variables at the top of the function */
     unsigned char i;
 
     crc ^= (unsigned int)byte << 8;
@@ -57,18 +67,13 @@ static unsigned int crc16_ccitt_update(unsigned int crc, unsigned char byte) {
 }
 
 static unsigned int model_crc16_recompute(void) {
-    /* C89 Compliance: Declare all variables at the top of the function */
     unsigned int crc = 0xFFFF;
     int i;
     unsigned int v;
 
-    // Pack feat|thresh|cleft|cright|value exactly as Python did:
-    
-    // CORRECTED PART: Handle the 'feat' array properly
     for (i = 0; i < NODES; i++) {
         crc = crc16_ccitt_update(crc, (unsigned char)feat[i]); 
     }
-    
     for (i = 0; i < NODES; i++) {
         crc = crc16_ccitt_update(crc, (unsigned char)thresh[i]);
     }
@@ -88,47 +93,76 @@ static unsigned int model_crc16_recompute(void) {
     return crc;
 }
 
-// ---------- Non-recursive Decision Tree traversal (stack-safe) ----------
 static unsigned char classify_pid_state(const unsigned char *features) {
-    /* C89 Compliance: Declare all variables at the top of the block */
     int node = 0;
     char f;
     unsigned char x;
     unsigned char th;
 
     for (;;) {
-        f = feat[node];                          // feature index or -2 for leaf
-        if (f == -2) return value[node];         // leaf → majority class (0/1)
-        x  = features[(unsigned char)f];         // pick feature
-        th = thresh[node];                       // threshold
-        node = (x <= th) ? cleft[node] : cright[node];  // branch without recursion
+        f = feat[node];
+        if (f == -2) return value[node];
+        x  = features[(unsigned char)f];
+        th = thresh[node];
+        node = (x <= th) ? cleft[node] : cright[node];
     }
 }
 
-// ---------- Example main() ----------
+// ---------- Main Control and Diagnostics Loop ----------
 void main(void) {
-    /* C89 Compliance: Declare all variables at the top of the function */
+    /* C89 Compliance: Declare all variables at the top */
     int current_pressure;
     int pressure_setpoint = 100; // Our target pressure
     int error;
     int control_signal;
+    
+    unsigned char feats[FEATURES]; // Feature vector for the ML model
+    unsigned char post_ZN;         // Output of the ML model
+    int valve_percent;
+    int delta_p;
 
-    // The main control loop that runs forever
-    while (1) {
-        // 1. Read the sensor
+    // Optional: Model integrity check is disabled to simplify simulation
+    /*
+    if (model_crc16_recompute() != MODEL_CRC16) {
+        while (1) { // trap // }
+    }
+    */
+
+    while(1){
+        // ======================================================
+        // 1. PID CONTROL SECTION
+        // ======================================================
         current_pressure = read_pressure_sensor();
-
-        // 2. Calculate the error
         error = pressure_setpoint - current_pressure;
-        
-        // 3. Compute the control signal using the PID algorithm
         control_signal = PID_update(error);
-        
-        // 4. Drive the valve with the new signal
         drive_valve(control_signal);
+        update_tank_pressure(control_signal);
         
-        // 5. Update our simple tank simulation model
-        //    (Pressure increases with valve opening and decreases with a constant "leak")
-        simulated_pressure = simulated_pressure + (valve_control / 10) - 5;
+        // ======================================================
+        // 2. ML DIAGNOSTIC SECTION
+        // ======================================================
+        // a) Create features from the live control data
+        delta_p = current_pressure - last_pressure;
+        valve_percent = control_signal / 10; // Simple conversion to a percentage
+        if (valve_percent > 100) valve_percent = 100;
+        if (valve_percent < 0) valve_percent = 0;
+        
+        // b) Quantize features (simple mapping for this example)
+        feats[0] = (unsigned char)(error + 128);       // Map error
+        feats[1] = (unsigned char)(valve_percent * 2.55); // Map 0-100 to 0-255
+        feats[2] = (unsigned char)(delta_p + 128);     // Map pressure change
+        
+        // c) Run the classifier
+        post_ZN = classify_pid_state(feats);
+        
+        // d) Act on the result
+        if (post_ZN == 0) {
+            performance_warning_flag = 1; // Set flag if performance is "Untuned"
+        } else {
+            performance_warning_flag = 0; // Clear flag if performance is "Tuned"
+        }
+        
+        // e) Update state for the next loop
+        last_pressure = current_pressure;
     }
 }
