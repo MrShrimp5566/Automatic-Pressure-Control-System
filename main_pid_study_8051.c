@@ -42,10 +42,24 @@ void update_tank_pressure(int value_signal){
 
 // --- PID Controller Function ---
 int PID_update(int error) {
-    int Kp = 15, Ki = 0, Kd = 0; // PID gains
+    int Kp = 12, Ki = 2, Kd = 2; // Your tuned gains
     int derivative, control_output;
     
+    int INTEGRAL_MAX = 500; // Define a maximum limit for the integral
+    int INTEGRAL_MIN = -500; // Define a minimum limit
+
     integral += error;
+
+    // --- ADD THIS ANTI-WINDUP FIX ---
+    // Clamp the integral term to prevent it from growing too large
+    if (integral > INTEGRAL_MAX) {
+        integral = INTEGRAL_MAX;
+    }
+    if (integral < INTEGRAL_MIN) {
+        integral = INTEGRAL_MIN;
+    }
+    // ---------------------------------
+
     derivative = error - prev_error;
     
     control_output = (Kp * error) + (Ki * integral) + (Kd * derivative);
@@ -56,42 +70,6 @@ int PID_update(int error) {
 }
 
 // --- ML Model Functions (CRC and Classifier) ---
-static unsigned int crc16_ccitt_update(unsigned int crc, unsigned char byte) {
-    unsigned char i;
-
-    crc ^= (unsigned int)byte << 8;
-    for (i = 0; i < 8; i++) {
-        crc = (crc & 0x8000) ? (unsigned int)((crc << 1) ^ 0x1021) : (unsigned int)(crc << 1);
-    }
-    return (unsigned int)(crc & 0xFFFF);
-}
-
-static unsigned int model_crc16_recompute(void) {
-    unsigned int crc = 0xFFFF;
-    int i;
-    unsigned int v;
-
-    for (i = 0; i < NODES; i++) {
-        crc = crc16_ccitt_update(crc, (unsigned char)feat[i]); 
-    }
-    for (i = 0; i < NODES; i++) {
-        crc = crc16_ccitt_update(crc, (unsigned char)thresh[i]);
-    }
-    for (i = 0; i < NODES; i++) {
-        v = (unsigned int)cleft[i];
-        crc = crc16_ccitt_update(crc, (unsigned char)(v & 0xFF));
-        crc = crc16_ccitt_update(crc, (unsigned char)((v >> 8) & 0xFF));
-    }
-    for (i = 0; i < NODES; i++) {
-        v = (unsigned int)cright[i];
-        crc = crc16_ccitt_update(crc, (unsigned char)(v & 0xFF));
-        crc = crc16_ccitt_update(crc, (unsigned char)((v >> 8) & 0xFF));
-    }
-    for (i = 0; i < NODES; i++) {
-        crc = crc16_ccitt_update(crc, (unsigned char)value[i]);
-    }
-    return crc;
-}
 
 static unsigned char classify_pid_state(const unsigned char *features) {
     int node = 0;
@@ -149,7 +127,7 @@ void main(void) {
         
         // b) Quantize features (simple mapping for this example)
         feats[0] = (unsigned char)(error + 128);       // Map error
-        feats[1] = (unsigned char)(valve_percent * 2.55); // Map 0-100 to 0-255
+        feats[1] = (unsigned char)((valve_percent * 255) / 1000); // Map 0-100 to 0-255
         feats[2] = (unsigned char)(delta_p + 128);     // Map pressure change
         
         // c) Run the classifier
